@@ -89,7 +89,7 @@ impl Reader {
         let mut source = Source::new(&source_path).await?;
         let data_section_separator_size = 16;
 
-        let metadata_start = find_metadata_start(&mut source).await?;
+        let metadata_start = find_metadata_start(&source_path).await?;
         source.move_cursor(metadata_start as u64).await?;
 
         let metadata = try_decode_increasing_buffer(&mut source, 0, |buf| {
@@ -286,16 +286,15 @@ fn ip_to_bytes(address: IpAddr) -> Vec<u8> {
     }
 }
 
-async fn find_metadata_start<S: AsyncRead + AsyncSeek + Unpin>(source: &mut Source<S>) -> Result<usize, MaxMindDBError> {
+async fn find_metadata_start(path: &str) -> Result<usize, MaxMindDBError> {
     const METADATA_START_MARKER: &[u8] = b"\xab\xcd\xefMaxMind.com";
 
-    try_decode_increasing_buffer(source, 0, |buf| 
-        memchr::memmem::rfind(buf, METADATA_START_MARKER)
-        .map(|idx| idx + METADATA_START_MARKER.len()))
-    .await?
-    .ok_or_else(|| MaxMindDBError::InvalidDatabaseError(
-        "Could not find MaxMind DB metadata in file.".to_owned(),
-    ))
+    let buf = tokio::fs::read(path).await?;
+    memchr::memmem::rfind(&buf, METADATA_START_MARKER)
+        .map(|idx| idx + METADATA_START_MARKER.len())
+        .ok_or_else(|| MaxMindDBError::InvalidDatabaseError(
+            "Could not find MaxMind DB metadata in file.".to_owned(),
+        ))
 }
 
 async fn try_decode_increasing_buffer<S, F, O>(source: &mut Source<S>, rec: usize, f: F) -> Result<Option<O>, MaxMindDBError> 
