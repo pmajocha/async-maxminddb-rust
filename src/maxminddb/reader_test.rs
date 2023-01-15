@@ -365,7 +365,7 @@ async fn test_lookup_prefix() {
     assert_eq!(prefix_len, 26); // "2c0f:ff00::/26"
 }
 
-fn check_metadata<T: AsyncRead + AsyncSeek + Unpin>(reader: &Reader<T>, ip_version: usize, record_size: usize) {
+fn check_metadata(reader: &Reader, ip_version: usize, record_size: usize) {
     let metadata = &reader.metadata;
 
     assert_eq!(metadata.binary_format_major_version, 2_u16);
@@ -395,7 +395,7 @@ fn check_metadata<T: AsyncRead + AsyncSeek + Unpin>(reader: &Reader<T>, ip_versi
     assert_eq!(metadata.record_size, record_size as u16)
 }
 
-async fn check_ip<T: AsyncRead + AsyncSeek + Unpin>(reader: &mut Reader<T>, ip_version: usize) {
+async fn check_ip(reader: &mut Reader, ip_version: usize) {
     let subnets = match ip_version {
         6 => [
             "::1:ffff:ffff",

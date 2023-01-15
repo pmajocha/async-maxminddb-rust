@@ -71,22 +71,22 @@ pub struct Metadata {
 }
 
 /// A reader for the MaxMind DB format. The lifetime `'data` is tied to the lifetime of the underlying buffer holding the contents of the database file.
-pub struct Reader<S: AsyncRead + AsyncSeek + Unpin> {
-    source: Source<S>,
+pub struct Reader {
+    source_path: String,
     pub metadata: Metadata,
     ipv4_start: usize,
     pointer_base: usize,
 }
 
-impl Reader<File> {
-    pub async fn open_readfile(database: &str) -> Result<Reader<File>, MaxMindDBError> {
-        let source = Source::new(database).await?;
-        Ok(Reader::from_source(source).await?)
+impl Reader {
+    pub async fn open_readfile(database: &str) -> Result<Reader, MaxMindDBError> {
+        Ok(Reader::from_source(database.to_owned()).await?)
     }
 }
 
-impl<'de, S: AsyncRead + AsyncSeek + Unpin> Reader<S> {
-    pub async fn from_source(mut source: Source<S>) -> Result<Reader<S>, MaxMindDBError> {
+impl Reader {
+    pub async fn from_source(source_path: String) -> Result<Reader, MaxMindDBError> {
+        let mut source = Source::new(&source_path).await?;
         let data_section_separator_size = 16;
 
         let metadata_start = find_metadata_start(&mut source).await?;
@@ -102,12 +102,12 @@ impl<'de, S: AsyncRead + AsyncSeek + Unpin> Reader<S> {
         let search_tree_size = (metadata.node_count as usize) * (metadata.record_size as usize) / 4;
 
         let mut reader = Reader {
-            source,
+            source_path,
             pointer_base: search_tree_size + data_section_separator_size,
             metadata,
             ipv4_start: 0,
         };
-        reader.ipv4_start = reader.find_ipv4_start().await?;
+        reader.ipv4_start = reader.find_ipv4_start(&mut source).await?;
 
         Ok(reader)
     }
@@ -153,18 +153,19 @@ impl<'de, S: AsyncRead + AsyncSeek + Unpin> Reader<S> {
     where
         T: DeserializeOwned,
     {
+        let mut source = Source::new(&self.source_path).await?;
         let ip_bytes = ip_to_bytes(address);
-        let (pointer, prefix_len) = self.find_address_in_tree(&ip_bytes).await?;
+        let (pointer, prefix_len) = self.find_address_in_tree(&mut source, &ip_bytes).await?;
         if pointer == 0 {
             return Err(MaxMindDBError::AddressNotFoundError(
                 "Address not found in database".to_owned(),
             ));
         }
 
-        let rec = self.resolve_data_pointer(pointer)?;
-        self.source.move_cursor(self.pointer_base as u64).await?;
+        let rec = self.resolve_data_pointer(pointer, source.total_size)?;
+        source.move_cursor(self.pointer_base as u64).await?;
 
-        try_decode_increasing_buffer(&mut self.source, rec, |buf| {
+        try_decode_increasing_buffer(&mut source, rec, |buf| {
             let mut decoder = decoder::Decoder::new(buf, rec);
             T::deserialize(&mut decoder).map(|v| (v, prefix_len)).map_err(|e| dbg!(e)).ok()
         })
@@ -172,7 +173,7 @@ impl<'de, S: AsyncRead + AsyncSeek + Unpin> Reader<S> {
         .ok_or_else(|| MaxMindDBError::DecodingError(format!("Error decoding {}", std::any::type_name::<T>())))
     }
 
-    async fn find_address_in_tree(&mut self, ip_address: &[u8]) -> Result<(usize, usize), MaxMindDBError> {
+    async fn find_address_in_tree<S: AsyncRead + AsyncSeek + Unpin>(&mut self, source: &mut Source<S>, ip_address: &[u8]) -> Result<(usize, usize), MaxMindDBError> {
         let bit_count = ip_address.len() * 8;
         let mut node = self.start_node(bit_count);
 
@@ -186,7 +187,7 @@ impl<'de, S: AsyncRead + AsyncSeek + Unpin> Reader<S> {
             }
             let bit = 1 & (ip_address[i >> 3] >> (7 - (i % 8)));
 
-            node = self.read_node(node, bit as usize).await?;
+            node = self.read_node(source, node, bit as usize).await?;
         }
         match node_count {
             n if n == node => Ok((0, prefix_len)),
@@ -205,7 +206,7 @@ impl<'de, S: AsyncRead + AsyncSeek + Unpin> Reader<S> {
         }
     }
 
-    async fn find_ipv4_start(&mut self) -> Result<usize, MaxMindDBError> {
+    async fn find_ipv4_start<S: AsyncRead + AsyncSeek + Unpin>(&mut self, source: &mut Source<S>) -> Result<usize, MaxMindDBError> {
         if self.metadata.ip_version != 6 {
             return Ok(0);
         }
@@ -217,32 +218,32 @@ impl<'de, S: AsyncRead + AsyncSeek + Unpin> Reader<S> {
             if node >= self.metadata.node_count as usize {
                 break;
             }
-            node = self.read_node(node, 0).await?;
+            node = self.read_node(source, node, 0).await?;
         }
         Ok(node)
     }
 
-    async fn read_node(&mut self, node_number: usize, index: usize) -> Result<usize, MaxMindDBError> {
+    async fn read_node<S: AsyncRead + AsyncSeek + Unpin>(&mut self, source: &mut Source<S>, node_number: usize, index: usize) -> Result<usize, MaxMindDBError> {
         let base_offset = node_number * (self.metadata.record_size as usize) / 4;
 
         let val = match self.metadata.record_size {
             24 => {
                 let offset = base_offset + index * 3;
-                to_usize(0, self.source.read_at(offset as u64, 3).await?) // &buf[offset..offset + 3]
+                to_usize(0, source.read_at(offset as u64, 3).await?) // &buf[offset..offset + 3]
             }
             28 => {
-                let mut middle = self.source.read_one(base_offset as u64 + 3).await?;
+                let mut middle = source.read_one(base_offset as u64 + 3).await?;
                 if index != 0 {
                     middle &= 0x0F
                 } else {
                     middle = (0xF0 & middle) >> 4
                 }
                 let offset = base_offset + index * 4;
-                to_usize(middle, self.source.read_at(offset as u64, 3).await?) //&buf[offset..offset + 3])
+                to_usize(middle, source.read_at(offset as u64, 3).await?) //&buf[offset..offset + 3])
             }
             32 => {
                 let offset = base_offset + index * 4;
-                to_usize(0, self.source.read_at(offset as u64, 4).await?) // &buf[offset..offset + 4])
+                to_usize(0, source.read_at(offset as u64, 4).await?) // &buf[offset..offset + 4])
             }
             s => {
                 return Err(MaxMindDBError::InvalidDatabaseError(format!(
@@ -255,10 +256,10 @@ impl<'de, S: AsyncRead + AsyncSeek + Unpin> Reader<S> {
         Ok(val)
     }
 
-    fn resolve_data_pointer(&self, pointer: usize) -> Result<usize, MaxMindDBError> {
+    fn resolve_data_pointer(&self, pointer: usize, total_size: usize) -> Result<usize, MaxMindDBError> {
         let resolved = pointer - (self.metadata.node_count as usize) - 16;
         
-        if resolved > self.source.total_size {
+        if resolved > total_size {
             return Err(MaxMindDBError::InvalidDatabaseError(
                 "the MaxMind DB file's search tree \
                  is corrupt"
