@@ -127,7 +127,7 @@ impl Reader {
     /// let city: geoip2::City = reader.lookup(ip).unwrap();
     /// print!("{:?}", city);
     /// ```
-    pub async fn lookup<T>(&mut self, address: IpAddr) -> Result<T, MaxMindDBError>
+    pub async fn lookup<T>(&self, address: IpAddr) -> Result<T, MaxMindDBError>
     where
         T: DeserializeOwned,
     {
@@ -149,7 +149,7 @@ impl Reader {
     /// let (city, prefix_len) = reader.lookup_prefix::<geoip2::City>(ip).unwrap();
     /// print!("{:?}, prefix length: {}", city, prefix_len);
     /// ```
-    pub async fn lookup_prefix<T>(&mut self, address: IpAddr) -> Result<(T, usize), MaxMindDBError>
+    pub async fn lookup_prefix<T>(&self, address: IpAddr) -> Result<(T, usize), MaxMindDBError>
     where
         T: DeserializeOwned,
     {
@@ -173,7 +173,7 @@ impl Reader {
         .ok_or_else(|| MaxMindDBError::DecodingError(format!("Error decoding {}", std::any::type_name::<T>())))
     }
 
-    async fn find_address_in_tree<S: AsyncRead + AsyncSeek + Unpin>(&mut self, source: &mut Source<S>, ip_address: &[u8]) -> Result<(usize, usize), MaxMindDBError> {
+    async fn find_address_in_tree<S: AsyncRead + AsyncSeek + Unpin>(&self, source: &mut Source<S>, ip_address: &[u8]) -> Result<(usize, usize), MaxMindDBError> {
         let bit_count = ip_address.len() * 8;
         let mut node = self.start_node(bit_count);
 
@@ -206,7 +206,7 @@ impl Reader {
         }
     }
 
-    async fn find_ipv4_start<S: AsyncRead + AsyncSeek + Unpin>(&mut self, source: &mut Source<S>) -> Result<usize, MaxMindDBError> {
+    async fn find_ipv4_start<S: AsyncRead + AsyncSeek + Unpin>(&self, source: &mut Source<S>) -> Result<usize, MaxMindDBError> {
         if self.metadata.ip_version != 6 {
             return Ok(0);
         }
@@ -223,7 +223,7 @@ impl Reader {
         Ok(node)
     }
 
-    async fn read_node<S: AsyncRead + AsyncSeek + Unpin>(&mut self, source: &mut Source<S>, node_number: usize, index: usize) -> Result<usize, MaxMindDBError> {
+    async fn read_node<S: AsyncRead + AsyncSeek + Unpin>(&self, source: &mut Source<S>, node_number: usize, index: usize) -> Result<usize, MaxMindDBError> {
         let base_offset = node_number * (self.metadata.record_size as usize) / 4;
 
         let val = match self.metadata.record_size {
