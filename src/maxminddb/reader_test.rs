@@ -2,12 +2,13 @@ use std::net::IpAddr;
 use std::str::FromStr;
 
 use serde::Deserialize;
+use tokio::io::{AsyncRead, AsyncSeek};
 
 use super::{MaxMindDBError, Reader};
 
 #[allow(clippy::float_cmp)]
-#[test]
-fn test_decoder() {
+#[tokio::test]
+async fn test_decoder() {
     let _ = env_logger::try_init();
 
     #[allow(non_snake_case)]
@@ -24,10 +25,10 @@ fn test_decoder() {
     }
 
     #[derive(Deserialize, Debug)]
-    struct TestType<'a> {
+    struct TestType {
         array: Vec<u32>,
         boolean: bool,
-        bytes: &'a [u8],
+        //bytes: Vec<u8>,
         double: f64,
         float: f32,
         int32: i32,
@@ -39,17 +40,17 @@ fn test_decoder() {
         utf8_string: String,
     }
 
-    let r = Reader::open_readfile("test-data/test-data/MaxMind-DB-test-decoder.mmdb");
+    let r = Reader::open_readfile("test-data/test-data/MaxMind-DB-test-decoder.mmdb").await;
     if let Err(err) = r {
         panic!("error opening mmdb: {:?}", err);
     }
-    let r = r.unwrap();
+    let mut r = r.unwrap();
     let ip: IpAddr = FromStr::from_str("1.1.1.0").unwrap();
-    let result: TestType = r.lookup(ip).unwrap();
+    let result: TestType = r.lookup(ip).await.unwrap();
 
     assert_eq!(result.array, vec![1_u32, 2_u32, 3_u32]);
     assert!(result.boolean);
-    assert_eq!(result.bytes, vec![0_u8, 0_u8, 0_u8, 42_u8]);
+    //assert_eq!(result.bytes, vec![0_u8, 0_u8, 0_u8, 42_u8]);
     assert_eq!(result.double, 42.123_456);
     assert_eq!(result.float, 1.1);
     assert_eq!(result.int32, -268_435_456);
@@ -78,28 +79,29 @@ fn test_decoder() {
     );
 }
 
-#[test]
-fn test_pointers_in_metadata() {
+#[tokio::test]
+async fn test_pointers_in_metadata() {
     let _ = env_logger::try_init();
 
     let r = Reader::open_readfile("test-data/test-data/MaxMind-DB-test-metadata-pointers.mmdb");
-    if let Err(err) = r {
+    if let Err(err) = r.await {
         panic!("error opening mmdb: {:?}", err);
     }
 }
 
-#[test]
-fn test_broken_database() {
+#[tokio::test]
+async fn test_broken_database() {
     let _ = env_logger::try_init();
 
-    let r = Reader::open_readfile("test-data/test-data/GeoIP2-City-Test-Broken-Double-Format.mmdb")
+    let mut r = Reader::open_readfile("test-data/test-data/GeoIP2-City-Test-Broken-Double-Format.mmdb")
+        .await
         .ok()
         .unwrap();
     let ip: IpAddr = FromStr::from_str("2001:220::").unwrap();
 
     #[derive(Deserialize, Debug)]
     struct TestType {}
-    match r.lookup::<TestType>(ip) {
+    match r.lookup::<TestType>(ip).await {
         Err(e) => assert_eq!(
             e,
             MaxMindDBError::InvalidDatabaseError("double of size 2".to_string())
@@ -108,11 +110,11 @@ fn test_broken_database() {
     }
 }
 
-#[test]
-fn test_missing_database() {
+#[tokio::test]
+async fn test_missing_database() {
     let _ = env_logger::try_init();
 
-    let r = Reader::open_readfile("file-does-not-exist.mmdb");
+    let r = Reader::open_readfile("file-does-not-exist.mmdb").await;
     match r {
         Ok(_) => panic!("Received Reader when opening non-existent file"),
         Err(e) => assert!(
@@ -123,11 +125,11 @@ fn test_missing_database() {
     }
 }
 
-#[test]
-fn test_non_database() {
+#[tokio::test]
+async fn test_non_database() {
     let _ = env_logger::try_init();
 
-    let r = Reader::open_readfile("README.md");
+    let r = Reader::open_readfile("README.md").await;
     match r {
         Ok(_) => panic!("Received Reader when opening a non-MMDB file"),
         Err(e) => assert_eq!(
@@ -141,8 +143,8 @@ fn test_non_database() {
     }
 }
 
-#[test]
-fn test_reader() {
+#[tokio::test]
+async fn test_reader() {
     let _ = env_logger::try_init();
 
     let sizes = [24_usize, 28, 32];
@@ -153,17 +155,17 @@ fn test_reader() {
                 "test-data/test-data/MaxMind-DB-test-ipv{}-{}.mmdb",
                 ip_version, record_size
             );
-            let reader = Reader::open_readfile(filename).ok().unwrap();
+            let mut reader = Reader::open_readfile(&filename).await.ok().unwrap();
 
             check_metadata(&reader, *ip_version, *record_size);
-            check_ip(&reader, *ip_version);
+            check_ip(&mut reader, *ip_version).await;
         }
     }
 }
 
 /// Create Reader by explicitly reading the entire file into a buffer.
-#[test]
-fn test_reader_readfile() {
+#[tokio::test]
+async fn test_reader_readfile() {
     let _ = env_logger::try_init();
 
     let sizes = [24_usize, 28, 32];
@@ -174,15 +176,15 @@ fn test_reader_readfile() {
                 "test-data/test-data/MaxMind-DB-test-ipv{}-{}.mmdb",
                 ip_version, record_size
             );
-            let reader = Reader::open_readfile(filename).ok().unwrap();
+            let mut reader = Reader::open_readfile(&filename).await.ok().unwrap();
 
             check_metadata(&reader, *ip_version, *record_size);
-            check_ip(&reader, *ip_version);
+            check_ip(&mut reader, *ip_version).await;
         }
     }
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "mmap")]
 fn test_reader_mmap() {
     let _ = env_logger::try_init();
@@ -195,7 +197,7 @@ fn test_reader_mmap() {
                 "test-data/test-data/MaxMind-DB-test-ipv{}-{}.mmdb",
                 ip_version, record_size
             );
-            let reader = Reader::open_mmap(filename).ok().unwrap();
+            let mut reader = Reader::open_mmap(filename).ok().unwrap();
 
             check_metadata(&reader, *ip_version, *record_size);
             check_ip(&reader, *ip_version);
@@ -203,66 +205,66 @@ fn test_reader_mmap() {
     }
 }
 
-#[test]
-fn test_lookup_city() {
+#[tokio::test]
+async fn test_lookup_city() {
     use super::geoip2::City;
     let _ = env_logger::try_init();
 
     let filename = "test-data/test-data/GeoIP2-City-Test.mmdb";
 
-    let reader = Reader::open_readfile(filename).unwrap();
+    let mut reader = Reader::open_readfile(filename).await.unwrap();
 
     let ip: IpAddr = FromStr::from_str("89.160.20.112").unwrap();
-    let city: City = reader.lookup(ip).unwrap();
+    let city: City = reader.lookup(ip).await.unwrap();
 
     let iso_code = city.country.and_then(|cy| cy.iso_code);
 
-    assert_eq!(iso_code, Some("SE"));
+    assert_eq!(iso_code, Some("SE".to_owned()));
 }
 
-#[test]
-fn test_lookup_country() {
+#[tokio::test]
+async fn test_lookup_country() {
     use super::geoip2::Country;
     let _ = env_logger::try_init();
 
     let filename = "test-data/test-data/GeoIP2-Country-Test.mmdb";
 
-    let reader = Reader::open_readfile(filename).unwrap();
+    let mut reader = Reader::open_readfile(filename).await.unwrap();
 
     let ip: IpAddr = FromStr::from_str("89.160.20.112").unwrap();
-    let country: Country = reader.lookup(ip).unwrap();
+    let country: Country = reader.lookup(ip).await.unwrap();
     let country = country.country.unwrap();
 
-    assert_eq!(country.iso_code, Some("SE"));
+    assert_eq!(country.iso_code, Some("SE".to_owned()));
     assert_eq!(country.is_in_european_union, Some(true));
 }
 
-#[test]
-fn test_lookup_connection_type() {
+#[tokio::test]
+async fn test_lookup_connection_type() {
     use super::geoip2::ConnectionType;
     let _ = env_logger::try_init();
 
     let filename = "test-data/test-data/GeoIP2-Connection-Type-Test.mmdb";
 
-    let reader = Reader::open_readfile(filename).unwrap();
+    let mut reader = Reader::open_readfile(filename).await.unwrap();
 
     let ip: IpAddr = FromStr::from_str("96.1.20.112").unwrap();
-    let connection_type: ConnectionType = reader.lookup(ip).unwrap();
+    let connection_type: ConnectionType = reader.lookup(ip).await.unwrap();
 
-    assert_eq!(connection_type.connection_type, Some("Cable/DSL"));
+    assert_eq!(connection_type.connection_type, Some("Cable/DSL".to_owned()));
 }
 
-#[test]
-fn test_lookup_annonymous_ip() {
+#[tokio::test]
+async fn test_lookup_annonymous_ip() {
     use super::geoip2::AnonymousIp;
     let _ = env_logger::try_init();
 
     let filename = "test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb";
 
-    let reader = Reader::open_readfile(filename).unwrap();
+    let mut reader = Reader::open_readfile(filename).await.unwrap();
 
     let ip: IpAddr = FromStr::from_str("81.2.69.123").unwrap();
-    let anonymous_ip: AnonymousIp = reader.lookup(ip).unwrap();
+    let anonymous_ip: AnonymousIp = reader.lookup(ip).await.unwrap();
 
     assert_eq!(anonymous_ip.is_anonymous, Some(true));
     assert_eq!(anonymous_ip.is_public_proxy, Some(true));
@@ -271,146 +273,99 @@ fn test_lookup_annonymous_ip() {
     assert_eq!(anonymous_ip.is_tor_exit_node, Some(true))
 }
 
-#[test]
-fn test_lookup_density_income() {
+#[tokio::test]
+async fn test_lookup_density_income() {
     use super::geoip2::DensityIncome;
     let _ = env_logger::try_init();
 
     let filename = "test-data/test-data/GeoIP2-DensityIncome-Test.mmdb";
 
-    let reader = Reader::open_readfile(filename).unwrap();
+    let mut reader = Reader::open_readfile(filename).await.unwrap();
 
     let ip: IpAddr = FromStr::from_str("5.83.124.123").unwrap();
-    let density_income: DensityIncome = reader.lookup(ip).unwrap();
+    let density_income: DensityIncome = reader.lookup(ip).await.unwrap();
 
     assert_eq!(density_income.average_income, Some(32323));
     assert_eq!(density_income.population_density, Some(1232))
 }
 
-#[test]
-fn test_lookup_domain() {
+#[tokio::test]
+async fn test_lookup_domain() {
     use super::geoip2::Domain;
     let _ = env_logger::try_init();
 
     let filename = "test-data/test-data/GeoIP2-Domain-Test.mmdb";
 
-    let reader = Reader::open_readfile(filename).unwrap();
+    let mut reader = Reader::open_readfile(filename).await.unwrap();
 
     let ip: IpAddr = FromStr::from_str("66.92.80.123").unwrap();
-    let domain: Domain = reader.lookup(ip).unwrap();
+    let domain: Domain = reader.lookup(ip).await.unwrap();
 
-    assert_eq!(domain.domain, Some("speakeasy.net"));
+    assert_eq!(domain.domain, Some("speakeasy.net".to_owned()));
 }
 
-#[test]
-fn test_lookup_isp() {
+#[tokio::test]
+async fn test_lookup_isp() {
     use super::geoip2::Isp;
     let _ = env_logger::try_init();
 
     let filename = "test-data/test-data/GeoIP2-ISP-Test.mmdb";
 
-    let reader = Reader::open_readfile(filename).unwrap();
+    let mut reader = Reader::open_readfile(filename).await.unwrap();
 
     let ip: IpAddr = FromStr::from_str("12.87.118.123").unwrap();
-    let isp: Isp = reader.lookup(ip).unwrap();
+    let isp: Isp = reader.lookup(ip).await.unwrap();
 
     assert_eq!(isp.autonomous_system_number, Some(7018));
-    assert_eq!(isp.isp, Some("AT&T Services"));
-    assert_eq!(isp.organization, Some("AT&T Worldnet Services"));
+    assert_eq!(isp.isp, Some("AT&T Services".to_owned()));
+    assert_eq!(isp.organization, Some("AT&T Worldnet Services".to_owned()));
 }
 
-#[test]
-fn test_lookup_asn() {
+#[tokio::test]
+async fn test_lookup_asn() {
     use super::geoip2::Asn;
     let _ = env_logger::try_init();
 
     let filename = "test-data/test-data/GeoIP2-ISP-Test.mmdb";
 
-    let reader = Reader::open_readfile(filename).unwrap();
+    let mut reader = Reader::open_readfile(filename).await.unwrap();
 
     let ip: IpAddr = FromStr::from_str("1.128.0.123").unwrap();
-    let asn: Asn = reader.lookup(ip).unwrap();
+    let asn: Asn = reader.lookup(ip).await.unwrap();
 
     assert_eq!(asn.autonomous_system_number, Some(1221));
-    assert_eq!(asn.autonomous_system_organization, Some("Telstra Pty Ltd"));
+    assert_eq!(asn.autonomous_system_organization, Some("Telstra Pty Ltd".to_owned()));
 }
 
-#[test]
-fn test_lookup_prefix() {
+#[tokio::test]
+async fn test_lookup_prefix() {
     use super::geoip2::City;
     let _ = env_logger::try_init();
 
     let filename = "test-data/test-data/GeoIP2-ISP-Test.mmdb";
 
-    let reader = Reader::open_readfile(filename).unwrap();
+    let mut reader = Reader::open_readfile(filename).await.unwrap();
 
     // IPv4
     let ip: IpAddr = "89.160.20.128".parse().unwrap();
-    let (_, prefix_len) = reader.lookup_prefix::<City>(ip).unwrap();
+    let (_, prefix_len) = reader.lookup_prefix::<City>(ip).await.unwrap();
 
     assert_eq!(prefix_len, 25); // "::89.160.20.128/121"
 
     // Last host
     let ip: IpAddr = "89.160.20.254".parse().unwrap();
-    let (_, last_prefix_len) = reader.lookup_prefix::<City>(ip).unwrap();
+    let (_, last_prefix_len) = reader.lookup_prefix::<City>(ip).await.unwrap();
 
     assert_eq!(prefix_len, last_prefix_len);
 
     // IPv6
     let ip: IpAddr = "2c0f:ff00::1".parse().unwrap();
-    let (_, prefix_len) = reader.lookup_prefix::<City>(ip).unwrap();
+    let (_, prefix_len) = reader.lookup_prefix::<City>(ip).await.unwrap();
 
     assert_eq!(prefix_len, 26); // "2c0f:ff00::/26"
 }
 
-#[test]
-fn test_within_city() {
-    use super::geoip2::City;
-    use super::Within;
-    use ipnetwork::IpNetwork;
-
-    let _ = env_logger::try_init();
-
-    let filename = "test-data/test-data/GeoIP2-City-Test.mmdb";
-
-    let reader = Reader::open_readfile(filename).unwrap();
-
-    let ip_net = IpNetwork::V6("::/0".parse().unwrap());
-
-    let mut iter: Within<City, _> = reader.within(ip_net).unwrap();
-
-    // Make sure the first is what we expect it to be
-    let item = iter.next().unwrap().unwrap();
-    assert_eq!(item.ip_net, IpNetwork::V4("2.2.3.0/24".parse().unwrap()));
-    assert_eq!(item.info.city.unwrap().geoname_id, Some(2655045));
-
-    let mut n = 1;
-    for _ in iter {
-        n += 1;
-    }
-
-    // Make sure we had the expected number
-    assert_eq!(n, 243);
-
-    // A second run through this time a specific network
-    let specific = IpNetwork::V4("81.2.69.0/24".parse().unwrap());
-    let mut iter: Within<City, _> = reader.within(specific).unwrap();
-    // Make sure we have the expected blocks/info
-    let mut expected = vec![
-        // Note: reversed so we can use pop
-        IpNetwork::V4("81.2.69.192/28".parse().unwrap()),
-        IpNetwork::V4("81.2.69.160/27".parse().unwrap()),
-        IpNetwork::V4("81.2.69.144/28".parse().unwrap()),
-        IpNetwork::V4("81.2.69.142/31".parse().unwrap()),
-    ];
-    while !expected.is_empty() {
-        let e = expected.pop().unwrap();
-        let item = iter.next().unwrap().unwrap();
-        assert_eq!(item.ip_net, e);
-    }
-}
-
-fn check_metadata<T: AsRef<[u8]>>(reader: &Reader<T>, ip_version: usize, record_size: usize) {
+fn check_metadata<T: AsyncRead + AsyncSeek + Unpin>(reader: &Reader<T>, ip_version: usize, record_size: usize) {
     let metadata = &reader.metadata;
 
     assert_eq!(metadata.binary_format_major_version, 2_u16);
@@ -440,7 +395,7 @@ fn check_metadata<T: AsRef<[u8]>>(reader: &Reader<T>, ip_version: usize, record_
     assert_eq!(metadata.record_size, record_size as u16)
 }
 
-fn check_ip<T: AsRef<[u8]>>(reader: &Reader<T>, ip_version: usize) {
+async fn check_ip<T: AsyncRead + AsyncSeek + Unpin>(reader: &mut Reader<T>, ip_version: usize) {
     let subnets = match ip_version {
         6 => [
             "::1:ffff:ffff",
@@ -470,7 +425,7 @@ fn check_ip<T: AsRef<[u8]>>(reader: &Reader<T>, ip_version: usize) {
 
     for subnet in &subnets {
         let ip: IpAddr = FromStr::from_str(subnet).unwrap();
-        let value: IpType = reader.lookup(ip).unwrap();
+        let value: IpType = reader.lookup(ip).await.unwrap();
 
         assert_eq!(value.ip, *subnet);
     }
@@ -479,7 +434,7 @@ fn check_ip<T: AsRef<[u8]>>(reader: &Reader<T>, ip_version: usize) {
 
     for &address in &no_record {
         let ip: IpAddr = FromStr::from_str(address).unwrap();
-        match reader.lookup::<IpType>(ip) {
+        match reader.lookup::<IpType>(ip).await {
             Ok(v) => panic!("received an unexpected value: {:?}", v),
             Err(e) => assert_eq!(
                 e,

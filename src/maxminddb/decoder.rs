@@ -89,8 +89,8 @@ impl<'de> Decoder<'de> {
                 res
             }
             Value::Bool(x) => visitor.visit_bool(x),
-            Value::Bytes(x) => visitor.visit_borrowed_bytes(x),
-            Value::String(x) => visitor.visit_borrowed_str(x),
+            Value::Bytes(x) => visitor.visit_bytes(x),
+            Value::String(x) => visitor.visit_str(x),
             Value::I32(x) => visitor.visit_i32(x),
             Value::U16(x) => visitor.visit_u16(x),
             Value::U32(x) => visitor.visit_u32(x),
@@ -105,7 +105,6 @@ impl<'de> Decoder<'de> {
 
     fn decode_any_value(&mut self) -> DecodeResult<Value<'_, 'de>> {
         let (size, type_num) = self.size_and_type();
-
         Ok(match type_num {
             1 => {
                 let new_ptr = self.decode_pointer(size);
