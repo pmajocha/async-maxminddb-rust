@@ -86,12 +86,14 @@ impl Reader {
 
 impl Reader {
     pub async fn from_source(source_path: String) -> Result<Reader, MaxMindDBError> {
-        let mut source = Source::new(&source_path).await?;
+        println!("init");
         let data_section_separator_size = 16;
-
         let metadata_start = find_metadata_start(&source_path).await?;
+        println!("meta {metadata_start}");
+        let mut source = Source::new(&source_path).await?;
         source.move_cursor(metadata_start as u64).await?;
 
+        println!("Decoding meta");
         let metadata = try_decode_increasing_buffer(&mut source, 0, |buf| {
             let mut type_decoder = decoder::Decoder::new(buf, 0);
             Metadata::deserialize(&mut type_decoder).ok()    
@@ -107,8 +109,9 @@ impl Reader {
             metadata,
             ipv4_start: 0,
         };
+        println!("ipv4 start");
         reader.ipv4_start = reader.find_ipv4_start(&mut source).await?;
-
+        println!("ipv4 end");
         Ok(reader)
     }
 
@@ -155,16 +158,17 @@ impl Reader {
     {
         let mut source = Source::new(&self.source_path).await?;
         let ip_bytes = ip_to_bytes(address);
+        println!("Adress");
         let (pointer, prefix_len) = self.find_address_in_tree(&mut source, &ip_bytes).await?;
         if pointer == 0 {
             return Err(MaxMindDBError::AddressNotFoundError(
                 "Address not found in database".to_owned(),
             ));
         }
-
+        println!("rec");
         let rec = self.resolve_data_pointer(pointer, source.total_size)?;
         source.move_cursor(self.pointer_base as u64).await?;
-
+        println!("decoding");
         try_decode_increasing_buffer(&mut source, rec, |buf| {
             let mut decoder = decoder::Decoder::new(buf, rec);
             T::deserialize(&mut decoder).map(|v| (v, prefix_len)).map_err(|e| dbg!(e)).ok()
@@ -307,6 +311,7 @@ where
     let max_size = source.total_size - start_position as usize;
 
     for size_mult in 1..usize::MAX {
+        println!("Increasing buffer to {}", rec + size_mult * BASE);
         source.move_cursor(start_position).await?;
         if rec + size_mult * BASE > max_size {
             let buf = source.read(max_size).await?;
