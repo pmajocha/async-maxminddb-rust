@@ -168,7 +168,7 @@ impl Reader {
         println!("rec");
         let rec = self.resolve_data_pointer(pointer, source.total_size)?;
         source.move_cursor(self.pointer_base as u64).await?;
-        println!("decoding");
+        println!("decoding rec {rec} pointer_base {}", self.pointer_base);
         try_decode_increasing_buffer(&mut source, rec, |buf| {
             let mut decoder = decoder::Decoder::new(buf, rec);
             T::deserialize(&mut decoder).map(|v| (v, prefix_len)).map_err(|e| dbg!(e)).ok()
