@@ -84,16 +84,24 @@ impl Reader {
     }
 }
 
+#[allow(dead_code)]
+async fn find_meta_by_loading_whole_file(s: &str) -> Result<usize, MaxMindDBError> {
+    let buf = tokio::fs::read(s).await?;
+    memchr::memmem::rfind(&buf, METADATA_START_MARKER)
+        .map(|m| m + METADATA_START_MARKER.len())
+        .ok_or_else(|| MaxMindDBError::InvalidDatabaseError(
+            "Could not find MaxMind DB metadata in file.".to_owned()))
+}
+
 impl Reader {
     pub async fn from_source(source_path: String) -> Result<Reader, MaxMindDBError> {
-        println!("init");
         let data_section_separator_size = 16;
-        let metadata_start = find_metadata_start(&source_path).await?;
-        println!("meta {metadata_start}");
         let mut source = Source::new(&source_path).await?;
+
+        const CHUNK: usize = 1024 * 1024; // 1 Mb
+        let metadata_start = find_metadata_start(&mut source, CHUNK).await?;
         source.move_cursor(metadata_start as u64).await?;
 
-        println!("Decoding meta");
         let metadata = try_decode_increasing_buffer(&mut source, 0, |buf| {
             let mut type_decoder = decoder::Decoder::new(buf, 0);
             Metadata::deserialize(&mut type_decoder).ok()    
@@ -109,9 +117,9 @@ impl Reader {
             metadata,
             ipv4_start: 0,
         };
-        println!("ipv4 start");
+
         reader.ipv4_start = reader.find_ipv4_start(&mut source).await?;
-        println!("ipv4 end");
+
         Ok(reader)
     }
 
@@ -158,17 +166,17 @@ impl Reader {
     {
         let mut source = Source::new(&self.source_path).await?;
         let ip_bytes = ip_to_bytes(address);
-        println!("Adress");
         let (pointer, prefix_len) = self.find_address_in_tree(&mut source, &ip_bytes).await?;
         if pointer == 0 {
             return Err(MaxMindDBError::AddressNotFoundError(
                 "Address not found in database".to_owned(),
             ));
         }
-        println!("rec");
+
         let rec = self.resolve_data_pointer(pointer, source.total_size)?;
         source.move_cursor(self.pointer_base as u64).await?;
-        println!("decoding rec {rec} pointer_base {}", self.pointer_base);
+
+        //TODO rec can be quite big, need to investigate how data is read, because it happens, that we load 3 Mb into memory, but then use only 1 kB of it
         try_decode_increasing_buffer(&mut source, rec, |buf| {
             let mut decoder = decoder::Decoder::new(buf, rec);
             T::deserialize(&mut decoder).map(|v| (v, prefix_len)).map_err(|e| dbg!(e)).ok()
@@ -290,15 +298,61 @@ fn ip_to_bytes(address: IpAddr) -> Vec<u8> {
     }
 }
 
-async fn find_metadata_start(path: &str) -> Result<usize, MaxMindDBError> {
-    const METADATA_START_MARKER: &[u8] = b"\xab\xcd\xefMaxMind.com";
+const METADATA_START_MARKER: &[u8] = b"\xab\xcd\xefMaxMind.com";
+const MARKER_LEN: usize = METADATA_START_MARKER.len();
+/// Find metadata start by taking 1Mb chunks of data.
+/// Chunks are then connected to check if metadata start marker is between them.
+async fn find_metadata_start<S: AsyncRead + AsyncSeek + Unpin>(source: &mut Source<S>, chunk_size: usize) -> Result<usize, MaxMindDBError> {
+    let mut iter = source.total_size;
+    let mut last_buf = vec![];
+    let chunk_size = usize::max(chunk_size, MARKER_LEN);
 
-    let buf = tokio::fs::read(path).await?;
+    loop {
+        if let Some(start) = iter.checked_sub(chunk_size) {
+            source.move_cursor(start as u64).await?;
+            let current_buf = source.read(chunk_size).await?;
+            if let Some(meta_start) = try_find_metadata(start, chunk_size, current_buf, &last_buf) {
+                return Ok(meta_start);
+            }
+            last_buf = current_buf[..MARKER_LEN].to_vec();
+            iter -= chunk_size;
+        } else {
+            // only [0..iter-1] left or [0..iter] if file is smaller than 1 Mb
+            source.move_cursor(0).await?;
+            let to_read = if iter == source.total_size { iter } else { iter - 1 };
+            let current_buf = source.read(to_read).await?;
+            return try_find_metadata(0,  to_read, current_buf, &last_buf)
+                .ok_or_else(|| MaxMindDBError::InvalidDatabaseError(
+                    "Could not find MaxMind DB metadata in file.".to_owned()))
+        }
+    }
+}
+
+fn try_find_metadata(start: usize, chunk_size: usize, current_buf: &[u8], last_buf: &[u8]) -> Option<usize> {
+    if let Some(meta_start) = check_in_buf(current_buf) {
+        return Some(start + meta_start);
+    }
+    if let Some(meta_start) = check_between(&last_buf, &current_buf) {
+        return Some(start + (chunk_size - MARKER_LEN) + meta_start);
+    }
+    None
+}
+
+fn check_between(last_buf: &[u8], current_buf: &[u8]) -> Option<usize> {
+    if last_buf.is_empty() {
+        return None
+    }
+    let from_current = &current_buf[(current_buf.len() - MARKER_LEN)..];
+    let from_last = &last_buf[..MARKER_LEN];
+    let mut result = [0; MARKER_LEN * 2];
+    result[..MARKER_LEN].copy_from_slice(from_current);
+    result[MARKER_LEN..].copy_from_slice(from_last);
+    check_in_buf(&result)
+}
+
+fn check_in_buf(buf: &[u8]) -> Option<usize> {
     memchr::memmem::rfind(&buf, METADATA_START_MARKER)
         .map(|idx| idx + METADATA_START_MARKER.len())
-        .ok_or_else(|| MaxMindDBError::InvalidDatabaseError(
-            "Could not find MaxMind DB metadata in file.".to_owned(),
-        ))
 }
 
 async fn try_decode_increasing_buffer<S, F, O>(source: &mut Source<S>, rec: usize, f: F) -> Result<Option<O>, MaxMindDBError> 
@@ -311,7 +365,6 @@ where
     let max_size = source.total_size - start_position as usize;
 
     for size_mult in 1..usize::MAX {
-        println!("Increasing buffer to {}", rec + size_mult * BASE);
         source.move_cursor(start_position).await?;
         if rec + size_mult * BASE > max_size {
             let buf = source.read(max_size).await?;
@@ -334,7 +387,19 @@ mod reader_test;
 
 #[cfg(test)]
 mod tests {
+    use crate::{source::Source, MARKER_LEN, find_metadata_start};
+
     use super::MaxMindDBError;
+
+    #[tokio::test]
+    async fn test_reading_metadata() {
+        let path = "test-data/test-data/MaxMind-DB-test-decoder.mmdb";
+        let mut source = Source::new(path).await.unwrap();
+
+        for size in MARKER_LEN..(1024 * 32) {
+            assert_eq!(2931, find_metadata_start(&mut source, size).await.unwrap());
+        }
+    }
 
     #[test]
     fn test_error_display() {

@@ -14,7 +14,7 @@ impl Source<tokio::fs::File> {
     pub async fn new(path: &str) -> Result<Source<tokio::fs::File>, MaxMindDBError> {
         let file = tokio::fs::File::open(path).await?;
         Ok(Self {
-            buffer: Vec::with_capacity(1024),
+            buffer: Vec::new(),
             total_size: file.metadata().await?.len() as usize,
             stream: file,
         })
