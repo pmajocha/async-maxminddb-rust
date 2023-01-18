@@ -5,6 +5,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io;
 use std::net::IpAddr;
 
+use log::warn;
 use serde::de::DeserializeOwned;
 use serde::{de, Deserialize};
 use source::Source;
@@ -80,7 +81,14 @@ pub struct Reader {
 
 impl Reader {
     pub async fn open_readfile(database: &str) -> Result<Reader, MaxMindDBError> {
+        warn!("CONSTRUCTING {}", std::backtrace::Backtrace::capture());
         Ok(Reader::from_source(database.to_owned()).await?)
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        warn!("DECONSTRUCTING {}", std::backtrace::Backtrace::capture());
     }
 }
 
