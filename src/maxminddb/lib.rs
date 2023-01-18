@@ -81,14 +81,14 @@ pub struct Reader {
 
 impl Reader {
     pub async fn open_readfile(database: &str) -> Result<Reader, MaxMindDBError> {
-        warn!("CONSTRUCTING");
+        warn!("CONSTRUCTING {}", std::backtrace::Backtrace::capture());
         Ok(Reader::from_source(database.to_owned()).await?)
     }
 }
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        warn!("DECONSTRUCTING");
+        warn!("DECONSTRUCTING {}", std::backtrace::Backtrace::capture());
     }
 }
 
